@@ -1,6 +1,85 @@
 # Karbot Rage! Session Summary
 # Entries are ordered newest-to-oldest. Most recent session is at the top.
 
+## 2026-08-29 (Session 33 — housekeeping: VPS spot-check, closed the paper-trade fee-variance and P&L-inflation KNOWN DEBT items with a direct compliance.db query, shipped Telegram /mute /unmute)
+
+### Mandate
+Prompted by the operator wanting legitimate Oracle Cloud VPS traffic (so the
+account doesn't look inactive) rather than a thin ping script — combined with
+picking real, already-flagged items off the standing "Next up" list instead of
+inventing busywork. No strategy code touched.
+
+### What was done
+1. **VPS spot-check (read-only, over SSH)** — `git log -1` on the box matches
+   local `main` (`7ec5b3d`) exactly; `karbot` and `karbot-canary` both
+   `active`/`enabled`; disk 17% of 49G; the canary's 18:13 UTC sweep evaluated
+   3,049 events with zero candidates and zero errors, consistent with every
+   sweep since deployment; `telegram.enabled: true` confirmed by reading
+   `config.yaml` directly rather than inferring it from a log line (the
+   `config_resolved` startup log itself has since scrolled out of `journalctl`
+   retention, which only goes back to 2026-08-21 despite `uptime` reporting 27
+   days — journal retention, not a reboot; not investigated further).
+2. **Paper-trade fee variance and P&L inflation — both closed.** Pulled all
+   757 rows from `logs/compliance.db`'s `trades` table directly. Finding: the
+   fee split is real but isn't "old formula vs. new formula" as the original
+   Session 25/28 hypothesis had it — 312 rows at exactly `fee_paid=70.0` plus
+   a long tail of other large values ($15–$330) are **all** the
+   pre-Session-26 flat-14% formula at different Kelly-derived position sizes
+   (0.14 × size; $500 was just the most common size, landing on a round $70).
+   The last such row is 2026-07-13T19:09:14 UTC; every row after that has
+   `fee_paid` under $2.30 — exactly Session 27's 5 known post-fix trades
+   ("$0.05–$81.36" positions). So there was never a live bug in the corrected
+   fee formula. This also independently corroborates Session 29's separate
+   finding (via sequence-gap correlation, a completely different method) that
+   every one of these 757 rows is a book-reconstruction artifact, not a real
+   edge — two methods landing on the same population is real confirmation,
+   not a restatement. Full numbers in CLAUDE.md's KNOWN DEBT section.
+3. **New debt found in the process, not fixed**: `compliance.db`'s
+   `filled_price`, `quantity`, and `ordered_price` columns are `NULL` on all
+   757 rows. The Session 16 fix documented in CLAUDE.md only touched the
+   CSV-writing path (`kalshi_trades.csv`) — the `compliance.db` INSERT path
+   never got the equivalent fix. Flagged, not built.
+4. **Shipped Telegram `/mute` `/unmute`** (standing item 17) —
+   `agents/notifications/telegram_agent.py`: in-memory `_muted` flag toggled
+   in `_handle_operator_reply`, checked before the kill-switch/yes-no paths
+   (same pattern the kill switch already used). Suppresses Tier 2 only
+   (trade opened/resolved, rejected opportunity, generic tier-2
+   notifications); Tier 1 (leg failure, feed health) and pending permission
+   requests are untouched by design — the Session 20 feed-down alert must
+   keep bypassing mute, and it does. Resets to unmuted on every restart
+   (no persistence file), so a forgotten mute can't outlive a deploy.
+   16 new tests (`tests/test_telegram_mute.py`); full suite 321/321 passing
+   (305 pre-existing — 4 more than CLAUDE.md's previously documented 301, an
+   unexplained small pre-existing discrepancy, not chased down — plus the 16
+   new ones). Deployed to the VPS via `git pull` + `systemctl restart karbot`;
+   service confirmed to restart cleanly with no errors in the log. **Not
+   independently confirmed**: the operator actually sending `/mute`/`/unmute`
+   from their phone and seeing the expected behavior — that requires a human
+   test this session cannot perform itself.
+
+### What was decided
+- Mute state is in-memory and per-process, not persisted — deliberate: the
+  alternative (a state file) risks a forgotten mute silently surviving a
+  restart indefinitely, which is worse than occasionally having to
+  re-mute after a deploy.
+- The fee-variance and P&L-inflation KNOWN DEBT items are closed together,
+  since the direct data query answered both from the same table in one pass
+  — recorded as two separate closures in CLAUDE.md rather than merged, so
+  the historical record of what each session originally flagged stays intact.
+
+### What to do first next session
+- Ask the operator to send `/mute` then `/unmute` from Telegram and confirm
+  the two confirmation messages and the Tier 2 suppression/resumption behave
+  as documented — the one piece of this session's work that can't be
+  self-verified.
+- Standing items unaffected by this session: the stuck order-book reset loop,
+  the `_request_snapshot` concurrency limiter, the Health Monitor agent, and
+  the full line-by-line CONFIRMED-LIVE re-audit (today's was a spot-check,
+  not the full pass). See README.md "Next up" / CLAUDE.md "Next session
+  priorities" for the complete current list.
+
+---
+
 ## 2026-08-02 (Session 32 — built the S5a/S5b passive arbitrage canary as a standalone detect-and-log process. Live-verified end to end. Zero candidates in the first sweeps, with every near miss exactly one spread wide.)
 
 ### Mandate

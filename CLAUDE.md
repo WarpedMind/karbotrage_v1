@@ -53,7 +53,7 @@ Karbot Rage! is a multi-agent automated trading system designed for decentralize
 - agents/research/regulatory_intelligence.py: **NEW COMPLETE** — `RegulatoryIntelligenceAgentImpl` (full impl) + `RegulatoryIntelligenceAgent` (BaseAgent stub); polls CFTC RSS + Federal Register every 6h; keyword pre-filter controls API costs; Claude Sonnet assesses urgency 1-5; urgency 3→Telegram FYI, 4→Telegram alert, 5→Telegram + trading pause; operator sends clear phrase via Telegram to resume; weekly sweep skips keyword filter; daily/cycle caps + circuit breaker; overflow queue for items exceeding per-cycle cap
 - agents/management/reflection.py: `ReflectionAgentImpl` (full impl) + `ReflectionAgent` (inherits it); `run()` starts nightly scheduler (02:00 ET / 07:00 UTC) + heartbeat; uses `AsyncAnthropic` (migrated from synchronous client in Session 14); reads/writes `logs/compliance.db` (trades, rejections, audit_trail tables — created Session 14)
 - agents/management/compliance.py: **v4 UPDATED** — IRS dual-track logging, append-only audit trail, compliance action log, REGULATORY_HALT enforcement; **polling loop removed** (now handled by RegulatoryIntelligenceAgent); subscribes to RegulatoryAlertEvent to log AI-assessed alerts to compliance_actions.jsonl; subscriptions wired to TradeExecutedEvent, TradeResolvedEvent, LegFailureEvent, RejectedOpportunityEvent, RegulatoryAlertEvent; TradeExecutedEvent handler INSERTs per-trade row into compliance.db (INSERT OR IGNORE, real-time); TradeResolvedEvent handler updates kalshi_trades.csv (atomic read-modify-write, gain_loss split across legs, status=RESOLVED) and UPDATEs compliance.db row; _ensure_log_files bootstraps compliance.db schema (trades/rejections/audit_trail) at startup so DB is always ready
-- agents/notifications/telegram_agent.py: **UPDATED** — TelegramNotificationAgent (full impl) + TelegramAgent (BaseAgent stub); subscribes to TelegramNotificationEvent, TelegramPermissionRequestEvent, LegFailureEvent (Tier 1), TradeExecutedEvent (Tier 2), RejectedOpportunityEvent (Tier 2), FeedHealthEvent (Tier 1, Session 20); getUpdates polling every 3s; 1 msg/sec rate limit; single-operator FIFO permission resolution; always publishes TelegramPermissionResponseEvent with response_text so RegulatoryIntelligenceAgent can check for clear phrase; enabled=False → no-op (no HTTP calls, no polling); `_handle_feed_health` (Session 20) tracks last-known connected state per platform and alerts only on connected→disconnected/disconnected→connected transition for platform="kalshi", ignoring other platforms — **Session 24 root cause: `telegram.enabled` has been `False` in production the entire time (no `config.yaml` existed on the VPS) — every Telegram feature since Session 19 has NEVER ACTUALLY FIRED live, not "pending verification."** **Session 25: RegulatoryAlertEvent subscription + `_handle_regulatory_alert` REMOVED** — was producing a second, broken, duplicate Telegram message for every regulatory item (blank `source_name`/`matched_keywords`, referenced a deleted `logs/regulatory_alerts.txt`, hardcoded "CRITICAL" regardless of actual urgency) alongside `RegulatoryIntelligenceAgent`'s already-correct urgency-branched message; found via tonight's first-ever live Telegram run. `RegulatoryAlertEvent` still publishes for `ComplianceOfficer`'s logging — only the Telegram consumer was removed.
+- agents/notifications/telegram_agent.py: **UPDATED** — TelegramNotificationAgent (full impl) + TelegramAgent (BaseAgent stub); subscribes to TelegramNotificationEvent, TelegramPermissionRequestEvent, LegFailureEvent (Tier 1), TradeExecutedEvent (Tier 2), RejectedOpportunityEvent (Tier 2), FeedHealthEvent (Tier 1, Session 20); getUpdates polling every 3s; 1 msg/sec rate limit; single-operator FIFO permission resolution; always publishes TelegramPermissionResponseEvent with response_text so RegulatoryIntelligenceAgent can check for clear phrase; enabled=False → no-op (no HTTP calls, no polling); `_handle_feed_health` (Session 20) tracks last-known connected state per platform and alerts only on connected→disconnected/disconnected→connected transition for platform="kalshi", ignoring other platforms — **Session 24 root cause: `telegram.enabled` has been `False` in production the entire time (no `config.yaml` existed on the VPS) — every Telegram feature since Session 19 has NEVER ACTUALLY FIRED live, not "pending verification."** **Session 25: RegulatoryAlertEvent subscription + `_handle_regulatory_alert` REMOVED** — was producing a second, broken, duplicate Telegram message for every regulatory item (blank `source_name`/`matched_keywords`, referenced a deleted `logs/regulatory_alerts.txt`, hardcoded "CRITICAL" regardless of actual urgency) alongside `RegulatoryIntelligenceAgent`'s already-correct urgency-branched message; found via tonight's first-ever live Telegram run. `RegulatoryAlertEvent` still publishes for `ComplianceOfficer`'s logging — only the Telegram consumer was removed. **Session 33 (2026-08-29): `/mute`/`/unmute` operator commands added** — in-memory `_muted` flag toggled in `_handle_operator_reply` (short-circuits before the kill-switch/yes-no paths, same pattern the kill switch uses); suppresses Tier 2 handlers only (`_handle_trade_executed`, `_handle_trade_resolved`, `_handle_rejected_opportunity`, and the tier==2 branch of `_handle_notification`); Tier 1 (`_handle_leg_failure`, `_handle_feed_health`) and `_handle_permission_request` are untouched and always send, so the Session 20 feed-down alert keeps bypassing mute as designed; flag resets to unmuted on every restart (no persistence file) so a forgotten mute can't outlive a deploy. Deployed, service confirmed to restart cleanly — live operator round-trip not yet independently confirmed.
 
 ### BaseAgent interface (all runner-facing classes implement this)
 ```python
@@ -141,13 +141,14 @@ async def run(self): ...
   for weather and later strategies, with a hard statistical methodology gate
   (Bonferroni, n≥20, 3-period replication, market-price baseline) that any
   candidate must clear before it can influence a position.
-- Full test suite: **301/301 passing** (226 through Session 31 + 75 Session 32
-  `canary/` tests: strike conventions, basket economics, series qualification,
-  sweep/re-confirmation, and a live-path isolation guard). Runner smoke test
-  (`--mock-prices --exit-after-test`) exits cleanly. Note that in both Session
-  31 and Session 32 the expensive findings came from **counting**, not from
-  tests — Session 32's void-settlement gap and its failed sweep reconciliation
-  both had a fully green suite next to them.
+- Full test suite: **321/321 passing** (was documented as 301 through Session
+  32; re-counted directly Session 33 and actually collected 305 pre-existing —
+  a small, unexplained pre-existing discrepancy in this doc, not investigated
+  further — plus 16 new Session 33 Telegram `/mute`/`/unmute` tests). Runner
+  smoke test (`--mock-prices --exit-after-test`) exits cleanly. Note that in
+  both Session 31 and Session 32 the expensive findings came from
+  **counting**, not from tests — Session 32's void-settlement gap and its
+  failed sweep reconciliation both had a fully green suite next to them.
 - Kalshi market volume filter: FIXED AND CONFIRMED LIVE (Session 15) —
   `_fetch_active_kalshi_markets()` sends `mve_filter=exclude`, paginates
   via `cursor`, filters on `volume_24h_fp` (cast to float). Live VPS
@@ -1041,37 +1042,55 @@ commit `5348533` (depth plumbing only, predates bugs #2's cap wiring and
   books are simultaneously stale. Not implemented — explicitly deferred,
   not urgent.
 
-### P&L figures likely inflated during paper trading — HIGH PRIORITY, NOT YET RE-VERIFIED (Session 25)
-- VPS paper trades show $58–$288 realized P&L per trade at ~$500 position
-  size, implying 11–57% net margins. S1 arb on liquid Kalshi binary markets
-  should realistically yield 1–5% net after fees. The most probable cause is
-  corrupt order books (from unrecovered sequence gaps) feeding stale/wrong
-  bid-ask spreads to ArbScanner, which then detects spuriously large spreads
-  as arb opportunities. The book-reset recovery mechanism is confirmed
-  working live (Session 23) — but the resulting P&L distribution has NOT
-  been checked against the 1–5% benchmark since. **Live Telegram PnL
-  figures observed by the operator on 2026-07-01 evening ($338.50, $343.50,
-  $383.50, $323.50, etc.) appear comparable to or larger than the
-  originally-flagged inflated range — NOT confirmed improved.**
-  **First priority next session**: pull RESOLVED trades from
-  `compliance.db` timestamped after 2026-07-01 16:31 UTC (when the Session
-  23 fix went live), compute PnL as a percentage of position size, and
-  determine whether the distribution is now realistic or still inflated.
-  Do not treat paper trading data as validated until this is checked — if
-  still inflated, the original hypothesis (corrupt books → bad spreads →
-  spurious S1 opportunities) was incomplete or wrong and needs a fresh
-  investigation, not an assumption that the book-reset fix also fixed this.
+### P&L figures likely inflated during paper trading — CLOSED, Session 33 (2026-08-29), corroborates Session 29's independent finding
+- Originally flagged Session 25 as HIGH PRIORITY / NOT YET RE-VERIFIED. It was
+  effectively already answered by **Session 29's KNOWN DEBT item 1** (S1 is
+  structurally impossible; all observed paper trades correlate 100% with a
+  `sequence_gap_detected` event on the same market at the same second — i.e.
+  every one is a book-reconstruction artifact, not a real edge) — but that
+  closure was never cross-referenced back to this entry, so it sat looking
+  open. Session 33 pulled all 757 rows from `compliance.db` directly (see the
+  fee-variance entry immediately below) and confirms the same population: the
+  inflated $58–$288-per-trade figures cited here are exactly the pre-Session-26
+  era, the same trades Session 29 independently proved were sequence-gap
+  artifacts via a completely different method (event-log correlation vs.
+  direct fee/PnL-by-timestamp query). Two independent investigations landing
+  on the same 757 rows and the same conclusion is real corroboration, not
+  just a restatement. `s1_canary_mode=True` (Session 28) already stops any of
+  this from reaching a live trade. Closed — no further action.
 
-### Paper trade fee variance — flagged, NOT investigated (Session 25)
+### Paper trade fee variance — CLOSED, Session 33 (2026-08-29)
 - Operator observed live via Telegram trade-executed messages on
   2026-07-01 evening that fee amounts vary in an unexplained way across
   trades: some show a flat $70.00 fee regardless of PnL size, others show
-  $0.00, $42.78, $113.27, $56.64. Not investigated this session. Next
-  session should pull the fee calculation logic (`PaperExecutor` or
-  wherever fees are computed) and cross-reference against `compliance.db`
-  to determine whether this is expected (e.g. fee scales with position
-  size or trade type in a way not obvious from the Telegram summary) or a
-  real bug. Do not assume either way without checking the actual numbers.
+  $0.00, $42.78, $113.27, $56.64. **Investigated directly against
+  `compliance.db` (all 757 rows, `SELECT timestamp, fee_paid, expected_pnl_usd
+  ... ORDER BY timestamp`), not inferred.** Finding, more precise than the
+  original hypothesis: it is **not** simply "flat $70 before the Session 26
+  fee-model fix, price-dependent variance after." 312 rows show exactly
+  `fee_paid=70.0`, and a long tail of other large values ($15.29, $42.78,
+  $63.14, $83.65, $160.07, $221.71, $260.56, $329.88, …) sit alongside them —
+  **all of these, including the non-$70 ones, are the pre-Session-26 flat-14%
+  formula evaluated at different Kelly-derived position sizes** (0.14 × size,
+  and $500 was simply the single most common size, landing exactly on $70).
+  The last such row is timestamped 2026-07-13T19:09:14 UTC. Every row after
+  that has `fee_paid` under $2.30 (0.07105, 0.007546, 2.2723848, 0.09065,
+  0.00119945) — exactly the 5 trades Session 27 already described as
+  "$0.05–$81.36" liquidity-capped positions, now confirmed as a hard fee-value
+  boundary in the data itself, not just a session's recollection. So the
+  "variance" was always two different code-era populations sitting in one
+  table, not a live bug in the corrected formula. Closed — this also directly
+  answers the P&L-inflation item immediately above, since it is the same
+  underlying dataset.
+- **New, found while pulling this data, not fixed this session**:
+  `compliance.db`'s `trades` table has `filled_price`, `quantity`, and
+  `ordered_price` **NULL on all 757 rows**, every trade ever recorded. The
+  Session 16 fix documented elsewhere in this file only touched the
+  CSV-writing path (`kalshi_trades.csv`'s `_build_trade_row`); the
+  `compliance.db` INSERT path (`ComplianceOfficer`'s `TradeExecutedEvent`
+  handler) apparently never received the equivalent fix and has never
+  populated these three columns. Out of scope for a fee-variance check —
+  flagged as new debt, not investigated further.
 
 ### Reconciliation (NOT built — future session)
 - No periodic reconciliation job exists to cross-check resolved S1 trades
@@ -1249,6 +1268,11 @@ The candidates, with their state:
    means checked against `git log -1` on the VPS itself plus fresh log
    output, never inferred from a local commit. Also schedule the pending
    VPS reboot (restart-required notice, 3 security updates outstanding).
+   **Spot-checked, Session 33 (2026-08-29)**: `git log -1` matches local
+   `main` exactly (`7ec5b3d`), `karbot`/`karbot-canary` both active and
+   enabled, disk 17% of 49G, `telegram.enabled: true` confirmed by reading
+   `config.yaml` directly. Not the full line-by-line audit this item asks
+   for — still standing for that.
 9. ~~Confirm Kalshi's maker fee from the primary source~~ — **DONE,
    Session 30**: primary fee schedule obtained; maker M defaults to 0, so
    maker fees are $0 outside ~76 enumerated series. See KNOWN DEBT above.
@@ -1275,13 +1299,16 @@ The candidates, with their state:
    cause of the Session 26 disk-full outage. The Session 26 fix
    (`structlog.configure` filtering) stops this from filling the disk again,
    but does not fix why the loop happens.
-13. **Investigate paper-trade fee variance** (KNOWN DEBT, Session 25) — fee
-   amounts observed live via Telegram vary unexplainably ($70.00 flat,
-   $0.00, $42.78, $113.27, $56.64). Session 28 note: the flat $70.00
-   entries are almost certainly the pre-Session-26 flat-14% fee model (7%
-   per leg × ~$500 size × 2 legs = $70) and the variance since is the
-   price-dependent real formula — cross-reference against `compliance.db`
-   to confirm, then close this item.
+13. ~~**Investigate paper-trade fee variance**~~ — **DONE, Session 33
+   (2026-08-29).** Confirmed against all 757 `compliance.db` rows: the
+   flat-$70-and-varied-large-fee population is entirely pre-Session-26
+   (flat-14% formula at different Kelly-derived sizes, not a broken new
+   formula), ending exactly at 2026-07-13T19:09 UTC; every row after that
+   has `fee_paid` under $2.30, matching Session 27's 5 known post-fix
+   trades. See KNOWN DEBT for the full writeup, which also closes the
+   separate Session 25 P&L-inflation item. New debt found in the process:
+   `compliance.db`'s `filled_price`/`quantity`/`ordered_price` are NULL on
+   all 757 rows — the Session 16 CSV fix never reached this table.
 14. **Continue live-verifying Telegram alerting** (Session 19/20/24/25) —
    confirm: no `TypeError` on any real Kalshi WS disconnect with
    `kalshi_reconnect_retry` logs increasing (Session 19); a real "FEED
@@ -1301,14 +1328,20 @@ The candidates, with their state:
    bounding in-flight REST snapshot fetches, to smooth the post-restart
    burst that produced the 429s. Only worth prioritizing if 429s become a
    recurring pattern rather than a one-time restart surge.
-17. **Telegram mute/unmute** — add operator commands (`/mute`, `/unmute`)
-   so the bot can be silenced during high-volume paper trading without
-   disabling the agent entirely. Scope: `TelegramNotificationAgent`
-   command handler only; no changes to event bus or other agents. Note: the
-   Session 20 feed-down alert is explicitly designed to keep bypassing mute
-   once this is built — do not let it get silenced. Prerequisite: the
-   sender-authentication fix (priority 1) — operator commands must not be
-   world-writable.
+17. ~~**Telegram mute/unmute**~~ — **DONE, Session 33 (2026-08-29).** Added
+   `/mute`/`/unmute` operator commands, scoped to
+   `TelegramNotificationAgent._handle_operator_reply` exactly as planned
+   (no event-bus or other-agent changes). In-memory `_muted` flag,
+   resets to unmuted on every restart. Suppresses Tier 2 only (trade
+   opened/resolved, rejected opportunity, generic tier-2 notifications);
+   Tier 1 (leg failure, feed health) and pending permission requests are
+   unaffected — the Session 20 feed-down alert still bypasses mute, as
+   required. 16 new tests (`tests/test_telegram_mute.py`), 321/321 total
+   passing. Deployed; service confirmed to restart cleanly with no errors.
+   **Not yet independently confirmed**: the operator actually sending
+   `/mute`/`/unmute` from Telegram and seeing the expected behavior — needs
+   a live human test, same discipline this file applies to every other
+   "deployed" claim.
 18. **Paper trading — clock RESET as of Session 30.** The old 2026-06-29 →
    2026-07-29 window is dead (see KNOWN DEBT): 9 of its first 14 days had
    a dead persistence layer, and every S1 trade in it is a confirmed

@@ -458,6 +458,40 @@ provider on one market family failed, for a legible reason. Full record:
 trades, no live exposure. That was the whole argument for sequencing divergence
 first, and it held.
 
+## VPS spot-check, fee variance closed, Telegram /mute /unmute, 2026-08-29 (Session 33)
+
+Housekeeping session: no strategy code touched. Three standing items from the
+"Next up" list closed.
+
+**VPS spot-check** — `git log -1` on the box matches local `main`
+(`7ec5b3d`) exactly, `karbot` and `karbot-canary` are both active/enabled,
+disk is 17% of 49G, and the canary's latest sweep (18:13 UTC) evaluated 3,049
+events with zero candidates and zero errors — consistent with every sweep
+since deployment. `telegram.enabled: true` was confirmed by reading
+`config.yaml` on disk, not inferred from a log line, closing the specific
+uncertainty Session 24 left open.
+
+**Paper-trade fee variance, closed** — see the "Open questions" entry below
+for the finding: it was two eras of trades (pre- and post-Session-26-fix)
+in one table, not a live bug. Answering it also answered the older,
+separately-tracked P&L-inflation item from Session 25.
+
+**Telegram `/mute` `/unmute` shipped** — `TelegramNotificationAgent` now
+tracks an in-memory `_muted` flag, toggled by the operator sending `/mute`
+or `/unmute` (checked in `_handle_operator_reply`, short-circuiting before
+the kill-switch and yes/no-permission paths, same pattern the kill switch
+already used). Muting suppresses Tier 2 chatter only — trade opened, trade
+resolved, rejected opportunity, and generic tier-2 notifications. Tier 1
+(leg failure, feed health) and pending permission requests are unaffected
+by design: the Session 20 feed-down alert exists specifically so an
+inventory-bearing agent going dark is never optional to see. The flag is
+in-memory only and resets to unmuted on every restart, so a forgotten mute
+can't silently outlive a deploy. 16 new tests, 321/321 total passing.
+Deployed to the VPS and the service was confirmed to restart cleanly with
+no errors; the interactive round-trip (operator actually sending `/mute`
+from Telegram) still needs the operator to try it live — that part can't
+be self-verified from this side.
+
 ## Open questions (flagged live, not yet resolved)
 
 - ~~**What replaces S6?**~~ **Answered and built.** The S5a/S5b passive arb
@@ -481,9 +515,12 @@ first, and it held.
   new dependencies.
 - **Every "CONFIRMED LIVE" claim in CLAUDE.md still needs re-auditing**
   against the VPS directly — the VPS was once found 4 commits behind
-  `main` while docs claimed otherwise. The box itself is healthy as of
-  2026-08-02 (service active, 35 days uptime, disk 17%), with a pending
-  reboot and 3 outstanding security updates.
+  `main` while docs claimed otherwise. **Spot-checked 2026-08-29 (Session
+  33)**: `git log -1` on the VPS matches local `main` exactly, both
+  `karbot` and `karbot-canary` services are active and enabled, disk is
+  17% of 49G, and `telegram.enabled: true` was confirmed by reading
+  `config.yaml` on disk directly (not inferred). This is a spot check, not
+  the full line-by-line audit the item calls for — still standing.
 - **S5a/S5b viability** — still not disproven and still not confirmed. What
   changed in Session 32 is that it is now measured continuously rather than by
   hand: `canary/` sweeps the whole open universe every few minutes. 12
@@ -506,11 +543,27 @@ first, and it held.
   the reconstruction bug is ever fixed.
 - ~~**RiskGate dollar/quantity unit mismatch**~~ — **fixed in Session 30**;
   sizing now returns integer contracts. Listed here in error after the fix.
-- **Paper trade fee variance**: fee amounts shown in Telegram trade
-  messages vary in a way that hasn't been explained yet (flat $70, or
-  $0–$113 depending on the trade) — needs a cross-check against the fee
-  calculation logic and `compliance.db` before assuming it's correct. Not
-  investigated yet.
+- ~~**Paper trade fee variance**~~ — **investigated and closed, Session 33
+  (2026-08-29)**. Pulled all 757 rows from `compliance.db` directly. The
+  split is real but isn't "old formula vs new formula" the way it first
+  looked: 312 rows show exactly `fee_paid=70.0` and a long tail of other
+  large values ($15–$330) — **all of these are the pre-Session-26 flat-14%
+  formula at different Kelly-derived position sizes**, not a broken new
+  formula; $70 is just the single most common size ($500) landing on a
+  round number. The last such row is 2026-07-13T19:09 UTC. Every row after
+  that has a tiny fee (under $2.30) — exactly the 5 trades Session 27
+  already described as "$0.05–$81.36" positions. So there was never a
+  live bug in the corrected fee formula; the "variance" was two different
+  eras of trades sitting in the same table. This also closes the older,
+  separately-flagged **P&L-inflation KNOWN DEBT item (Session 25, "HIGH
+  PRIORITY, NOT YET RE-VERIFIED")**: the cited $58–$288 range is exactly
+  the pre-fix era, not a still-open regression.
+- **New, found while investigating the above**: `compliance.db`'s `trades`
+  table has `filled_price`, `quantity`, and `ordered_price` **NULL on all
+  757 rows** — every trade ever recorded. The Session 16 fix documented in
+  CLAUDE.md only touched the CSV-writing path (`kalshi_trades.csv`); the
+  `compliance.db` INSERT path never received the same fix. Not fixed this
+  session (out of scope for a fee-variance check) — flagged as new debt.
 
 Two other items flagged earlier the same session were fixed before this
 list needed to carry them: the `size_usd=0.0` approved-trade bug
@@ -612,12 +665,15 @@ hours of logs instead of waiting days for an actual trade.
 **Standing**
 
 8. Re-audit every "CONFIRMED LIVE" claim against the VPS directly, and
-   schedule its pending reboot / security updates.
+   schedule its pending reboot / security updates. *Spot-checked
+   2026-08-29 (Session 33) — see above; full line-by-line audit still
+   outstanding.*
 9. Build the Health Monitor agent — no longer cosmetic once positions
    carry real variance.
-10. Investigate the stuck order-book reset loop; the paper-trade fee
-    variance; a concurrency limiter on `_request_snapshot`; Telegram
-    `/mute` `/unmute`.
+10. Investigate the stuck order-book reset loop; a concurrency limiter on
+    `_request_snapshot`; the newly-found `compliance.db` NULL
+    `filled_price`/`quantity`/`ordered_price` gap. ~~The paper-trade fee
+    variance~~ and ~~Telegram `/mute` `/unmute`~~ — both done Session 33.
 11. Live executor, then market-making — gated, last. Target the
     zero-maker-fee series, not the headline ones.
 

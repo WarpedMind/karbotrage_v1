@@ -1,6 +1,67 @@
 # Decision Log
 # Entries are ordered newest-to-oldest. Most recent decision is at the top.
 
+## 2026-08-29 — Session 33: the fee-variance "mystery" was two eras of trades in one table, not a formula bug, and it corroborates Session 29's independent finding rather than adding a new open question
+
+Two KNOWN DEBT items had been sitting open since Session 25 — flagged fee
+variance in Telegram trade messages, and a separately-worded suspicion of
+inflated paper P&L — both explicitly asking for a direct check against
+`compliance.db` before assuming either way. Nobody had pulled the data
+directly until this session.
+
+### What the data actually shows
+All 757 rows in `logs/compliance.db`'s `trades` table, queried directly by
+timestamp: 312 rows show exactly `fee_paid=70.0`; a long tail of other large
+values ($15.29, $42.78, $63.14, $83.65, $160.07, $221.71, $260.56, $329.88,
+…) sit alongside them, spanning the same date range. The original Session
+28 hypothesis — "$70 is the pre-Session-26 flat-14% model, the variance since
+is the corrected price-dependent formula" — gets the mechanism half right and
+the timeline wrong. **All of the large values, $70 and otherwise, are the
+same pre-Session-26 flat-14% formula**, just evaluated at different
+Kelly-derived position sizes (`fee = 0.14 × size_usd`); $500 was simply the
+single most common size, which is why $70 is the modal value rather than the
+only one. The last such row is timestamped 2026-07-13T19:09:14 UTC. Every
+row strictly after that has `fee_paid` under $2.30 — a clean, hard boundary,
+not a gradual shift — matching exactly the 5 trades Session 27 already
+described from memory as "$0.05–$81.36" liquidity-capped positions.
+
+### Why this matters beyond closing two checkboxes
+Session 29 had already established, by an entirely different method
+(correlating every observed paper trade against `sequence_gap_detected`
+events on the same market at the same second), that every one of these
+trades is a book-reconstruction artifact — S1 is structurally impossible on
+Kalshi, full stop. That finding closed KNOWN DEBT item 1 but was never
+cross-referenced back to the still-open Session 25 P&L-inflation entry, which
+kept sitting there looking unresolved. This session's fee/timestamp query is
+a second, independent method landing on the identical 757-row population and
+the identical conclusion (real edge: none; all pre-fix artifacts). Two
+different investigative methods converging on the same answer is actual
+corroboration, not just restating what was already known — and it means the
+P&L-inflation item can finally be closed with confidence rather than left as
+a stale "high priority, not yet re-verified" flag that nobody was going to
+re-open.
+
+### New debt surfaced, not acted on
+While pulling this data: `compliance.db`'s `filled_price`, `quantity`, and
+`ordered_price` columns are `NULL` on all 757 rows, every trade ever
+recorded. The Session 16 fix (documented in CLAUDE.md) corrected
+`kalshi_trades.csv`'s `_build_trade_row` to read real values from
+`event.platform_legs` — but that fix apparently never reached the parallel
+`compliance.db` INSERT path in `ComplianceOfficer`. Not fixed this session;
+flagged as new debt, deliberately out of scope for a fee-variance check.
+
+### Design decision: Telegram mute state is in-memory, not persisted
+Built `/mute`/`/unmute` the same session (standing item 17). The one real
+design choice: whether muting survives a restart. Decided **no** — the flag
+lives in `TelegramNotificationAgent.__init__` and resets to unmuted on every
+process start. The alternative (a state file, or a config flag) risks an
+operator muting the bot during a noisy paper-trading burst, forgetting about
+it, and the mute silently surviving every subsequent deploy — a worse failure
+mode than occasionally having to re-mute after a restart. This mirrors the
+project's existing posture on the regulatory-halt flag and the kill switch:
+anything that suppresses operator visibility should default toward *not*
+staying suppressed across a restart, not toward convenience.
+
 ## 2026-08-02 — Session 32 (addendum): an honest assessment of whether this project is likely to trade profitably
 
 The operator asked directly, at the end of Session 32: *"do you think there's any

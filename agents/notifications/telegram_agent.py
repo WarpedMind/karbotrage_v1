@@ -16,6 +16,11 @@ Design decisions:
     hard limit — kept low to avoid operator noise).
   - Eastern Time: fixed UTC-4 offset (EDT). Acceptable for May–Nov;
     switches to EST in November but timestamp accuracy is not critical here.
+  - /mute /unmute: silences Tier 2 chatter (trade opened/resolved, rejected
+    opportunity) for high-volume paper trading without disabling the agent.
+    In-memory only, resets to unmuted on every restart — a forgotten mute
+    can't persist across a deploy. Tier 1 (leg failure, feed health) and
+    permission requests always send regardless of mute state.
 """
 
 import asyncio
@@ -78,6 +83,15 @@ class TelegramNotificationAgent:
         # Alerts fire only on connected→disconnected or disconnected→connected
         # transitions, not on every FeedHealthEvent while still down.
         self._feed_connected: Dict[str, bool] = {}
+
+        # /mute /unmute (item 17, standing list): silences Tier 2 chatter
+        # (trade opened/resolved, rejected opportunity, tier==2 generic
+        # notifications) during high-volume paper trading. In-memory only —
+        # a restart always comes back unmuted, so a forgotten mute can't
+        # silently persist forever. Tier 1 (leg failure, feed health) and
+        # permission requests are never muted; see _handle_feed_health's
+        # own docstring, which this must keep honoring.
+        self._muted: bool = False
 
     def register_subscriptions(self):
         self.bus.subscribe(TelegramNotificationEvent, self._handle_notification)
@@ -232,6 +246,22 @@ class TelegramNotificationAgent:
             logger.warning("TelegramAgent: KILL SWITCH triggered by operator")
             return
 
+        command = text.strip().lower()
+        if command == "/mute":
+            self._muted = True
+            await self._outbound_queue.put(
+                "🔇 Muted — trade-opened/resolved and rejection messages "
+                "suppressed. Feed-down and leg-failure alerts still send. "
+                "Reply /unmute to resume."
+            )
+            logger.info("TelegramAgent: muted by operator")
+            return
+        if command == "/unmute":
+            self._muted = False
+            await self._outbound_queue.put("🔊 Unmuted — trade messages resuming.")
+            logger.info("TelegramAgent: unmuted by operator")
+            return
+
         reply = text.strip().lower()
         approved = reply in ("yes", "y", "approve", "approved")
 
@@ -291,6 +321,8 @@ class TelegramNotificationAgent:
         if event.tier == 1:
             text = f"🚨 KARBOT RAGE! CRITICAL\n{event.message}\n{self._et_timestamp()}"
         else:
+            if self._muted:
+                return
             text = f"{event.message}\n{self._et_timestamp()}"
         await self._outbound_queue.put(text)
 
@@ -365,10 +397,12 @@ class TelegramNotificationAgent:
         await self._outbound_queue.put(text)
 
     async def _handle_trade_executed(self, event: TradeExecutedEvent):
-        """Tier 2 — respects notify_on_trade flag."""
+        """Tier 2 — respects notify_on_trade flag and /mute."""
         if not self.config.telegram.enabled:
             return
         if not self.config.telegram.notify_on_trade:
+            return
+        if self._muted:
             return
         prefix = "📋 PAPER TRADE OPENED" if event.paper_mode else "✅ TRADE OPENED"
         market_id = event.platform_legs[0]["market_id"] if event.platform_legs else "?"
@@ -397,6 +431,8 @@ class TelegramNotificationAgent:
             return
         if not self.config.telegram.notify_on_trade:
             return
+        if self._muted:
+            return
         emoji = "🟢" if event.realized_pnl >= 0 else "🔴"
         text = (
             f"{emoji} TRADE RESOLVED\n"
@@ -410,10 +446,12 @@ class TelegramNotificationAgent:
         await self._outbound_queue.put(text)
 
     async def _handle_rejected_opportunity(self, event: RejectedOpportunityEvent):
-        """Tier 2 — respects notify_on_rejection flag."""
+        """Tier 2 — respects notify_on_rejection flag and /mute."""
         if not self.config.telegram.enabled:
             return
         if not self.config.telegram.notify_on_rejection:
+            return
+        if self._muted:
             return
         text = (
             f"⏭️ SKIPPED\n"
