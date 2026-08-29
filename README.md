@@ -488,9 +488,8 @@ inventory-bearing agent going dark is never optional to see. The flag is
 in-memory only and resets to unmuted on every restart, so a forgotten mute
 can't silently outlive a deploy. 16 new tests, 321/321 total passing.
 Deployed to the VPS and the service was confirmed to restart cleanly with
-no errors; the interactive round-trip (operator actually sending `/mute`
-from Telegram) still needs the operator to try it live — that part can't
-be self-verified from this side.
+no errors. **Live-confirmed same session** — the operator sent `/mute` and
+`/unmute` from Telegram directly and confirmed it working.
 
 ## Open questions (flagged live, not yet resolved)
 

@@ -52,10 +52,9 @@ inventing busywork. No strategy code touched.
    (305 pre-existing — 4 more than CLAUDE.md's previously documented 301, an
    unexplained small pre-existing discrepancy, not chased down — plus the 16
    new ones). Deployed to the VPS via `git pull` + `systemctl restart karbot`;
-   service confirmed to restart cleanly with no errors in the log. **Not
-   independently confirmed**: the operator actually sending `/mute`/`/unmute`
-   from their phone and seeing the expected behavior — that requires a human
-   test this session cannot perform itself.
+   service confirmed to restart cleanly with no errors in the log. **Live
+   round-trip confirmed same session** — the operator sent `/mute` and
+   `/unmute` from their phone and confirmed it working.
 
 ### What was decided
 - Mute state is in-memory and per-process, not persisted — deliberate: the
@@ -68,10 +67,6 @@ inventing busywork. No strategy code touched.
   the historical record of what each session originally flagged stays intact.
 
 ### What to do first next session
-- Ask the operator to send `/mute` then `/unmute` from Telegram and confirm
-  the two confirmation messages and the Tier 2 suppression/resumption behave
-  as documented — the one piece of this session's work that can't be
-  self-verified.
 - Standing items unaffected by this session: the stuck order-book reset loop,
   the `_request_snapshot` concurrency limiter, the Health Monitor agent, and
   the full line-by-line CONFIRMED-LIVE re-audit (today's was a spot-check,
